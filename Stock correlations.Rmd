@@ -1,0 +1,320 @@
+---
+title: "options"
+output: html_document
+  keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = TRUE,
+                      cache = TRUE)
+```
+
+```{r}
+
+if (FALSE) {
+  # Update R
+  R.version
+  #
+  install.packages("installr")
+  installr::updateR()
+  # renv::upgrade()
+  renv::init(bare = TRUE)
+}
+
+if (FALSE) { 
+  # install.packages("reshape2") 
+  install.packages("ggplot2") 
+  install.packages("Hmisc")
+  # install.packages("corrplot")
+  install.packages("dplyr")
+  install.packages("glue")
+  install.packages("lubridate")
+  # remotes::install_github("r-link/corrmorant")
+  
+  renv::settings$snapshot.type("all")
+  renv::snapshot()
+  # renv::restore()
+}
+
+# library(reshape2)
+library("ggplot2")
+library(Hmisc)
+# library(corrplot)
+library(dplyr)
+library(glue)
+library("lubridate")
+# library(corrmorant)
+# library(tidyverse)
+
+```
+ 
+ Set up for run
+ 
+```{r} 
+
+symbols = c("^gspc", "iwb", "^dji", "^ixic", "^cmc200", "xlb", "xlc", "xle", "xlf", "xlk", "xli", "xlp", "xlre", "xlu", "xlv", "xly", 
+            "jets", "oih", "xop", "itb", "kre", "xrt", "vnq", "pho", "fdn", "gdx", "tan", "xme", "moo", "pbw", "igv", "amlp", "smh", "ibb",
+            "tlt", "btc-usd", "ura" ) 
+# symbols = c("^gspc", "iwb", "^dji", "^ixic")  # for testing
+
+corrType = "Pearson"
+
+```
+
+Gather and prepare data
+
+```{r}
+
+options("getSymbols.warning4.0"=FALSE)
+
+symbolData = NULL
+
+for (symbol in symbols) {
+  print(glue( "Getting data for {symbol}..." ))
+  
+  data = 
+    quantmod::getSymbols(symbol, src="yahoo", auto.assign=FALSE, from="1900-01-01", to=Sys.Date()+1, verbose=FALSE) %>%
+    tsbox::ts_tsibble() %>%  # convert to tsibble (gives long format)
+    tidyr::pivot_wider(names_from = "id", values_from = "value")  %>% # correct format
+    dplyr::select("time", contains(".Close"))
+
+  if (is.null(symbolData)) {
+    symbolData = data
+  } else {
+    symbolData = merge(x=symbolData, y=data, by="time", all = TRUE)  
+  }
+}
+
+colnames(symbolData) = sub( "([^.]*)\\.(.*)", "\\1", colnames(symbolData) )  # keep colname before the dot
+colnames(symbolData) = tolower(colnames(symbolData))  # lowercase
+symbolData = dplyr::rename( symbolData, "date"="time" ) # rename
+
+
+symbolColNames = colnames(symbolData) 
+mask = stringr::str_detect(symbolColNames, stringr::coll("date", TRUE))
+symbolColNames = symbolColNames[-mask]
+
+symbolData = 
+  symbolData %>%
+  mutate(year = year(date),
+         isoYear = isoyear(date),
+         monthNo = month(date),
+         dayNo = day(date),
+         # monthDay = paste0("2000-", monthNo, "-", dayNo),  # pick a year here that data conversion doesn't barf on
+         # weekdayName = wday(date, label = TRUE, abbr = FALSE),
+         # weekdayNo = wday(date),
+         monthName = month(date, label = TRUE, abbr = FALSE),
+         stdweekNo = week(date),  # week starts first day of year, ends last day of year
+         isoweekNo = isoweek(date), #week starts on a Monday
+         epiweekNo = epiweek(date), # week starts on a Monday, may go to 53 weeks
+         # #wkGroup = paste(isoYear, "W", isoweekNo, sep=""),
+         yearWeekNo = sprintf("%04dW%02d", isoYear, isoweekNo),
+         # #moGroup = paste(year, "M", monthNo, sep=""),
+         yearMonthNo = sprintf("%04dM%02d", year, monthNo),
+  )
+
+
+# Calculate daily pct gains
+
+dailyData = symbolData
+
+for (symbol in symbolColNames) {      
+  print(glue( "Processing daily {symbol}..." ))
+  
+  dailyData =
+    dailyData %>%
+    mutate( prevDayClose = lag( {.data[[symbol]]} ) ) %>% 
+    mutate( "{symbol}.DailyGainPct" := ({.data[[symbol]]} - prevDayClose) / prevDayClose * 100 ) %>%       # pct change since previous day
+    mutate( "{symbol}.DailyGainLog" := (log10({.data[[symbol]]}) - log10(prevDayClose)) ) %>%       # pct change since previous day
+    select(-prevDayClose)
+}
+
+
+
+
+# Calculate monthly pct gains
+
+monthlyData = symbolData
+
+for (symbol in symbolColNames) {      
+  print(glue( "Processing monthly {symbol}..." ))
+  
+  monthlyData =
+    monthlyData %>%
+    mutate( prevDayClose = lag( {.data[[symbol]]} ) ) %>% 
+  #
+    group_by( yearMonthNo ) %>%
+      mutate( "{symbol}.MonthlyGainPct" := ({.data[[symbol]]} - first(prevDayClose)) / first(prevDayClose) * 100 ) %>%       # pct change since start of month
+      filter( date == last(date) ) %>%
+    ungroup() %>%
+    select(-prevDayClose)
+}
+
+```
+
+Check normality 
+```{r}
+
+if (FALSE) {
+  #install.packages("ggpubr")
+  # library("ggpubr")
+
+  hist(dailyData$gspc.DailyGainPct, breaks=100)
+  ggpubr::ggdensity(dailyData$gspc.DailyGainPct)
+  ggpubr::ggqqplot(dailyData$gspc.DailyGainPct)
+  
+  set.seed(1234)
+  shapiro.test(sample(dailyData$gspc.DailyGainPct, size=5000, replace=FALSE))
+  
+  # Gives:
+  # W = 0.84332, p-value < 2.2e-16
+  # ie data is NOT normally distributed
+  
+  ggpubr::ggdensity(dailyData$gspc.DailyGainLog)
+  ggpubr::ggqqplot(dailyData$gspc.DailyGainLog)
+  
+  set.seed(1234)
+  shapiro.test(sample(dailyData$gspc.DailyGainLog, size=5000, replace=FALSE))
+  # Gives:
+  # W = 0.84942, p-value < 2.2e-16
+  # ie data is NOT normally distributed
+  
+  
+}
+
+``` 
+
+
+
+
+```{r plotting fig.width=12, fig.height=8, dev='png'}
+
+
+# ++++++++++++++++++++++++++++
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+
+flattenCorrMatrix <- function(cormat, pmat, nmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut],
+    n = nmat[ut]
+    )
+}
+
+reorderRcorrOutput <- function(rcorrOutput){
+  # Use correlation between variables as distance
+  dd <- as.dist((1-rcorrOutput$r)/2)
+  hc <- hclust(dd)
+  newR = rcorrOutput$r[hc$order, hc$order]
+  newN = rcorrOutput$n[hc$order, hc$order]
+  newP = rcorrOutput$P[hc$order, hc$order]
+  structure(list(r = newR, n = newN, P = newP), class = "rcorr")
+}
+
+corrData =
+  dailyData %>% 
+  select( contains(c("GainPct")) ) 
+
+colnames(corrData) = sub( "([^.]*)\\.(.*)", "\\1", colnames(corrData) )  # keep colname before the dot
+
+# rcorr: Missing values are deleted in pairs rather than deleting all rows of x having any missing variables
+res2 <- rcorr( as.matrix(corrData), type=tolower(corrType) )
+res2
+res2ro = reorderRcorrOutput(res2)
+res2ro
+res2.flat = flattenCorrMatrix(res2ro$r, res2ro$P, res2ro$n) %>%
+  mutate( cor = round(cor, 2) ) %>%
+  mutate( pcat = cut(p, 
+                     breaks = c(0, 0.01, 0.05, 0.10, Inf),
+                     labels = c("<0.01", "<0.05", "<0.10", "NS"),
+                     right=TRUE
+                     ) ) %>%
+  mutate( pSig = format(p, digits=3) ) %>%
+  mutate( row=factor(row, levels=unique(row)) ) %>%  # Update the factor levels
+  mutate( column=factor(column, levels=unique(column)) )
+head( res2.flat, 5 )
+
+ggheatmap =
+  ggplot(res2.flat, 
+         aes(column, row, fill=cor)
+         )+  
+    geom_tile(color = "white") +
+    geom_text( aes( column, row, label=cor ),   # add Corr  value
+               color = "black", 
+               size = 0.9,
+               vjust=-0.9
+               ) +
+    geom_text( aes( column, row, label=glue("{row} : {column}\np={format(p, digits=3)}\nn={n}") ), # p value; \ua0 required to stop space+NL being stripped
+           color = "black", 
+           size = 0.4,
+           vjust= 0.8
+           ) +
+    geom_tile(data=res2.flat %>% filter(pcat == "NS"),   # indicate p=NS
+              fill="#00000080"
+              ) + 
+    geom_tile(data=res2.flat %>% filter(pcat == "<0.05"),   # indicate p<0.05
+              fill="#00000070"
+              ) +  
+    scale_fill_gradient2(
+      low = "blue", 
+      high = "red", 
+      mid = "white", 
+      midpoint = 0, 
+      limit = c(-1,1), 
+      space = "Lab", 
+      name=glue("{corrType} Correlation")
+      ) +
+    theme_minimal()+ # minimal theme
+    coord_fixed() 
+    
+ggheatmap2 = 
+  ggheatmap +
+  theme(
+      axis.text.x = element_text(angle = 45, vjust = 1, size = 4, hjust = 1),
+      axis.text.y = element_text(size = 4),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      axis.ticks = element_blank(),
+      legend.justification = c(1, 0),
+      legend.position = c(0.3, 0.65),
+      legend.direction = "horizontal")+
+      guides(fill = guide_colorbar( barwidth = 4, 
+                                    barheight = 0.5,                     
+                                    title.position = "top", 
+                                    title.hjust = 0.5,
+                                    title.theme = element_text(size = 6),
+                                    label.theme = element_text(size = 6)
+                                    )
+             ) +
+  scale_y_discrete(position = "right")
+  
+
+# Print the heatmap
+
+print(ggheatmap2)
+
+captureTime = now(tz = "America/New_York")
+ymdhmsz = format(as.POSIXct(captureTime), format = "%Y%m%d %H%M%S %Z")
+ymdhmz  = format(as.POSIXct(captureTime), format = "%Y-%m-%d %H:%M %Z")
+
+fn = glue("Stock correlations {ymdhmsz}.png")
+ggsave(
+  file.path("output", fn),
+  plot = ggheatmap2,
+  width = 8.5 - 2, 
+  height = (11 - 2) / 2, 
+  units = "in",
+  dpi = 1200
+)
+```
