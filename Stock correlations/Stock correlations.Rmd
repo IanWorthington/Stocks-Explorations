@@ -4,6 +4,8 @@ output: html_document
   keep_md: yes
 ---
 
+(C) Ian S. Worthington 2021.  All rights reserved.
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(dev = "png",
                       dpi = 300,
@@ -167,25 +169,35 @@ if (FALSE) {
   #install.packages("ggpubr")
   # library("ggpubr")
 
-  hist(dailyData$gspc.DailyGainPct, breaks=100)
-  ggpubr::ggdensity(dailyData$gspc.DailyGainPct)
-  ggpubr::ggqqplot(dailyData$gspc.DailyGainPct)
+  dailyStockData = historicalData$daily
+  hist(dailyStockData$gspc.DailyGainPct, breaks=100)
+  ggpubr::ggdensity(dailyStockData$gspc.DailyGainPct)
+  ggpubr::ggqqplot(dailyStockData$gspc.DailyGainPct)
   
   set.seed(1234)
-  shapiro.test(sample(dailyData$gspc.DailyGainPct, size=5000, replace=FALSE))
+  shapiro.test(sample(dailyStockData$gspc.DailyGainPct, size=5000, replace=FALSE))
   
   # Gives:
   # W = 0.84332, p-value < 2.2e-16
   # ie data is NOT normally distributed
   
-  ggpubr::ggdensity(dailyData$gspc.DailyGainLog)
-  ggpubr::ggqqplot(dailyData$gspc.DailyGainLog)
+  ggpubr::ggdensity(dailyStockData$gspc.DailyGainLog)
+  ggpubr::ggqqplot(dailyStockData$gspc.DailyGainLog)
   
   set.seed(1234)
-  shapiro.test(sample(dailyData$gspc.DailyGainLog, size=5000, replace=FALSE))
+  shapiro.test(sample(dailyStockData$gspc.DailyGainLog, size=5000, replace=FALSE))
   # Gives:
   # W = 0.84942, p-value < 2.2e-16
   # ie data is NOT normally distributed
+  
+  middleData = dailyStockData %>%
+    select(gspc.DailyGainPct) %>%
+    filter( between(gspc.DailyGainPct, -1.5, 1.5) ) 
+  
+  length(middleData$gspc.DailyGainPct)/length(dailyStockData$gspc.DailyGainPct) 
+  
+  set.seed(1234)
+  shapiro.test(sample(middleData$gspc.DailyGainPct, size=5000, replace=FALSE))
   
   
 }
