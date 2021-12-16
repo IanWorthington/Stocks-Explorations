@@ -1,0 +1,219 @@
+---
+title: "options"
+output: html_document
+  keep_md: yes
+---
+
+(C) Ian S. Worthington 2021.  All rights reserved.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = TRUE,
+                      cache = TRUE)
+```
+
+Set up
+
+```{r}
+
+if (FALSE) {
+  # Update R
+  R.version
+  #
+  install.packages("installr")
+  installr::updateR()
+  # renv::upgrade()
+  renv::init(bare = TRUE)
+}
+
+if (FALSE) {  
+  install.packages("ggplot2") 
+  install.packages("Hmisc") 
+  install.packages("dplyr")
+  install.packages("glue")
+  install.packages("lubridate") 
+  install.packages("ggtext") 
+  
+  renv::settings$snapshot.type("all")
+  renv::snapshot()
+  # renv::restore()
+}
+ 
+library("ggplot2")
+library("ggtext")
+library("ggfittext")
+library("tidyr")
+library("dplyr")
+library("glue")
+library("lubridate")
+options("getSymbols.warning4.0"=FALSE)
+
+```
+ 
+ Set up for run
+ 
+```{r} 
+
+
+```
+
+Gather and prepare data
+
+```{r}
+symbols = c("^gspc")
+
+
+symbolData = NULL
+
+for (symbol in symbols) {
+  print(glue( "Getting data for {symbol}..." ))
+  
+  rawData = 
+    quantmod::getSymbols(symbol, src="yahoo", auto.assign=FALSE, from="2002-01-01", to=Sys.Date()+1, verbose=FALSE) %>%
+    tsbox::ts_tsibble() %>%  # convert to tsibble (gives long format)
+    tidyr::pivot_wider(names_from = "id", values_from = "value")  %>% # correct format
+    dplyr::select("time", contains(".Close"))
+
+  # merge this symbol into collective
+  
+  if (is.null(symbolData)) {
+    symbolData = rawData
+  } else {
+    symbolData = merge(x=symbolData, y=rawData, by="time", all = TRUE)  
+  }
+}
+
+# tidy up names
+
+colnames(symbolData) = sub( "([^.]*)\\.(.*)", "\\1", colnames(symbolData) )  # keep colname before the dot
+colnames(symbolData) = tolower(colnames(symbolData))  # lowercase
+symbolData = dplyr::rename( symbolData, "date"="time" ) # rename
+
+# get names of symbol data columns
+
+symbolColNames = colnames(symbolData) 
+mask = stringr::str_detect(symbolColNames, stringr::coll("date", TRUE))
+symbolColNames = symbolColNames[-mask]
+
+symbolData = 
+  symbolData %>%
+  mutate(year = year(date),
+         isoYear = isoyear(date),
+         monthNo = month(date),
+         dayNo = day(date),
+         # monthDay = paste0("2000-", monthNo, "-", dayNo),  # pick a year here that data conversion doesn't barf on
+         weekdayName = wday(date, label = TRUE, abbr = FALSE),
+         # weekdayNo = wday(date),
+         monthName = month(date, label = TRUE, abbr = FALSE),
+         stdweekNo = week(date),  # week starts first day of year, ends last day of year
+         isoweekNo = isoweek(date), #week starts on a Monday
+         epiweekNo = epiweek(date), # week starts on a Monday, may go to 53 weeks
+         # #wkGroup = paste(isoYear, "W", isoweekNo, sep=""),
+         yearWeekNo = sprintf("%04dW%02d", isoYear, isoweekNo),
+         # #moGroup = paste(year, "M", monthNo, sep=""),
+         yearMonthNo = sprintf("%04dM%02d", year, monthNo),
+  )
+
+
+
+
+# Calculate daily pct gains
+
+dailyData =
+  symbolData %>%
+  drop_na( "gspc"  )  # remove (crypto) data for when the nyse is closed.  Alternative is to fill in the NAs with previous data
+
+for (symbol in symbolColNames) {      
+  print(glue( "Processing daily {symbol}..." ))
+  
+  dailyData =
+    dailyData %>%
+    mutate( prevDayClose = lag( {.data[[symbol]]} ) ) %>% 
+    mutate( "{symbol}.DailyGainPct" := ({.data[[symbol]]} - prevDayClose) / prevDayClose * 100 ) %>%       # pct change since previous day
+    #mutate( "{symbol}.DailyGainLog" := (log10({.data[[symbol]]}) - log10(prevDayClose)) ) %>%       # log change since previous day
+    select(-prevDayClose)
+}
+
+dailyData =
+  dailyData %>%
+  filter( weekdayName == "Friday" ) %>%
+  filter( monthName %in% c("March", "June", "September", "December")  ) %>%
+  group_by( yearMonthNo ) %>%
+    mutate( dayInMonth = 1:n()) %>% 
+  ungroup() %>%
+  filter( dayInMonth == 3 ) #%>%
+```
+
+
+```{r}
+
+tempData =
+  as_tibble(dailyData) %>%
+  select( -date )
+
+tempData %>% 
+  summarise( count=n(), mean.gspc.DailyGainPct=mean(gspc.DailyGainPct), sd.gspc.DailyGainPct=sd(gspc.DailyGainPct) )
+
+grpStats = tempData %>%
+  group_by( monthName ) %>%
+  summarise( count=n(), mean.gspc.DailyGainPct=mean(gspc.DailyGainPct), sd.gspc.DailyGainPct=sd(gspc.DailyGainPct) )
+grpStats
+
+
+```
+
+
+
+
+
+```{r plotting fig.width=12, fig.height=8, dev='png'}
+
+ggplot( dailyData,
+        aes( x=date, y=gspc.DailyGainPct, color=monthName)
+        ) +
+   geom_point()
+```
+
+
+```{r plotting fig.width=12, fig.height=8, dev='png'}
+
+ggplot(dailyData, 
+       aes(x = monthName, y=gspc.DailyGainPct)
+       ) + 
+  geom_boxplot() +
+  geom_dotplot(binaxis='y', 
+               stackdir='center', 
+               # binwidth=0.2,
+               dotsize=0.5)
+```
+
+
+```{r plotting fig.width=12, fig.height=8, dev='png'}
+
+ggplot(dailyData, 
+       aes(x=gspc.DailyGainPct, color=monthName, fill=monthName)
+       ) + 
+  geom_histogram(binwidth=0.1,
+                 # fill="white",
+                 color="white",
+                 alpha=1, 
+                 position="identity"
+                 ) +
+  facet_grid(monthName ~ .) +
+  geom_vline(data=grpStats,
+             aes(xintercept=mean.gspc.DailyGainPct),
+             color="blue", 
+             linetype="dashed", 
+             size=0.5
+            )
+   
+```
+
+
+```{r}
+
+
+```
+
+
